@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>SmartPrint - 印刷・PDF出力プレビュー</title>
+    <script src="https://cdn.tailwindcss.com?plugins=typography"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"/>
+    <link href="https://fonts.googleapis.com/css2?family=Biz+UDMincho:wght@400;700&family=Noto+Sans+JP:wght@300;400;500;700&family=Sawarabi+Mincho&family=Shippori+Mincho:wght@400;700&display=swap" rel="stylesheet"/>
+<link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#0f172a">
+
+    <style>
+        body { font-family: 'Noto Sans JP', sans-serif; background-color: #f1f5f9; }
+        .preview-wrapper { width: 100%; display: flex; justify-content: center; align-items: flex-start; position: relative; }
+        
+        .paper-preview {
+            background: white; box-shadow: 0 4px 15px rgba(0,0,0,0.1); box-sizing: border-box;
+            position: relative; display: flex; flex-direction: column; transform-origin: top center; flex-shrink: 0; overflow: hidden;
+        }
+        .paper-preview.portrait { width: 210mm; height: 297mm; }
+        .paper-preview.landscape { width: 297mm; height: 210mm; }
+
+        [contenteditable="true"]:hover { background-color: #f8fafc; cursor: text; }
+        [contenteditable="true"]:focus { background-color: #f1f5f9; outline: 2px solid #6366f1; outline-offset: 2px; }
+
+        .tmpl-mincho { font-family: 'BIZ UDMincho', 'Sawarabi Mincho', serif; }
+        .tmpl-two-col { column-count: 2; column-gap: 20px; }
+        
+        /* 和モダン（縦書き） */
+        .tmpl-japanese-modern { font-family: 'Shippori Mincho', 'BIZ UDMincho', serif; writing-mode: vertical-rl; text-orientation: mixed; }
+        .tmpl-japanese-modern .article-body { line-height: 2.2; }
+        .tmpl-japanese-modern .header-line { border-bottom: none !important; border-left: 2px solid #1e293b; padding-left: 8px; margin-left: 12px; flex-direction: column; align-items: flex-start; }
+
+        @media print {
+            html, body { height: auto !important; overflow: visible !important; background: white !important; color: black !important; }
+            .no-print { display: none !important; }
+            .print-area { padding: 0 !important; margin: 0 !important; width: 100% !important; }
+            .preview-wrapper { display: block !important; width: auto !important; margin: 0 !important; padding: 0 !important; height: auto !important; page-break-after: always; page-break-inside: avoid; }
+            .preview-wrapper:last-child { page-break-after: auto; }
+            .paper-preview { box-shadow: none !important; margin: 0 !important; display: flex !important; transform: none !important; width: auto !important; height: auto !important; overflow: hidden !important; }
+            .paper-preview.portrait { width: 210mm !important; }
+            .paper-preview.landscape { width: 297mm !important; }
+            [contenteditable="true"]:focus { outline: none !important; background-color: transparent !important; }
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen overflow-hidden">
+
+    <header class="no-print bg-slate-900 text-white p-4 flex items-center justify-between shadow-md shrink-0 z-50 relative">
+        <div class="flex items-center space-x-3">
+            <button onclick="toggleMobileMenu()" class="sm:hidden text-white hover:text-indigo-300 transition-colors focus:outline-none p-1">
+                <i class="fa-solid fa-bars text-xl"></i>
+            </button>
+            <h1 class="text-sm sm:text-lg font-bold tracking-wider">SmartPrint</h1>
+            <p class="text-[10px] sm:text-xs text-slate-400 hidden sm:block">SmartDiary 連動システム</p>
+        </div>
+        <div class="flex items-center space-x-2 sm:space-x-4">
+            <button onclick="selectSyncFolder()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg text-sm font-medium flex items-center">
+                <i class="fa-solid fa-folder-open sm:mr-2 text-amber-400"></i><span class="hidden sm:inline">フォルダ選択</span>
+            </button>
+            <button id="btn-print" onclick="window.print()" disabled class="bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center">
+                <i class="fa-solid fa-print sm:mr-2"></i><span class="hidden sm:inline">ブラウザ印刷</span>
+            </button>
+            <button id="btn-export-pdf" onclick="exportDirectPDF()" disabled class="bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-700 px-4 py-2 rounded-lg text-sm font-bold flex items-center">
+                <i class="fa-solid fa-file-pdf sm:mr-2"></i><span class="hidden sm:inline">PDF保存</span>
+            </button>
+        </div>
+    </header>
+
+    <div class="flex flex-1 overflow-hidden relative">
+        <div id="mobile-menu-backdrop" onclick="toggleMobileMenu()" class="absolute inset-0 bg-slate-900/50 z-40 opacity-0 pointer-events-none transition-opacity duration-300 sm:hidden"></div>
+
+        <aside id="sidebar-menu" class="no-print absolute sm:relative z-50 w-80 h-full bg-white border-r border-slate-200 overflow-y-auto shrink-0 transition-transform duration-300 transform -translate-x-full sm:translate-x-0">
+            <div class="p-4 pb-32 space-y-6">
+                <div class="flex justify-between items-center sm:hidden pb-2 border-b border-slate-100">
+                    <span class="font-bold text-slate-700 text-sm">メニュー</span>
+                    <button onclick="toggleMobileMenu()" class="text-slate-400 hover:text-slate-600 p-2">
+                        <i class="fa-solid fa-xmark text-lg"></i>
+                    </button>
+                </div>
+
+                <div class="space-y-3 pt-2">
+                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider">用紙設定</h4>
+                    <div>
+                        <label class="block text-xs text-slate-600 mb-1">1ページの掲載日数</label>
+                        <select id="input-days-per-page" onchange="renderPreview()" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-sm font-bold">
+                            <option value="1">1日分 (1マス表示)</option>
+                            <option value="2">2日分 (2分割表示)</option>
+                            <option value="3">3日分 (3分割表示)</option>
+                            <option value="4">4日分 (2×2 均等表示)</option>
+                            <option value="6">6日分 (6分割表示)</option>
+                        </select>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="changeOrientation('portrait')" id="orient-btn-portrait" class="orient-btn border-2 border-indigo-600 bg-indigo-50 text-indigo-900 py-2 rounded-xl text-xs font-bold transition-all"><i class="fa-solid fa-file mr-1.5"></i>縦向き</button>
+                        <button onclick="changeOrientation('landscape')" id="orient-btn-landscape" class="orient-btn border border-slate-200 text-slate-600 py-2 rounded-xl text-xs font-medium transition-all"><i class="fa-solid fa-file mr-1.5 rotate-90"></i>横向き</button>
+                    </div>
+                </div>
+
+                <div class="space-y-2 pt-2 border-t border-slate-100">
+                    <h4 class="text-xs font-bold text-slate-500 uppercase tracking-wider">表示項目のON/OFF</h4>
+                    <div class="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                        <label class="text-xs font-medium text-slate-700 cursor-pointer w-full" for="switch-show-title">タイトルの表示</label>
+                        <input type="checkbox" id="switch-show-title" checked onchange="renderPreview()" class="w-9 h-5 bg-slate-300 checked:bg-indigo-600 rounded-full appearance-none cursor-pointer relative before:content-[''] before:absolute before:h-4 before:w-4 before:bg-white before:rounded-full before:top-0.5 before:left-0.5 checked:before:translate-x-4 before:transition-transform shrink-0">
+                    </div>
+                    <div class="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                        <label class="text-xs font-medium text-slate-700 cursor-pointer w-full" for="switch-show-text">本文(テキスト)の表示</label>
+                        <input type="checkbox" id="switch-show-text" checked onchange="renderPreview()" class="w-9 h-5 bg-slate-300 checked:bg-indigo-600 rounded-full appearance-none cursor-pointer relative before:content-[''] before:absolute before:h-4 before:w-4 before:bg-white before:rounded-full before:top-0.5 before:left-0.5 checked:before:translate-x-4 before:transition-transform shrink-0">
+                    </div>
+                </div>
+
+                <div class="space-y-3 pt-2 border-t border-slate-100">
+                    <h4 class="text-xs font-bold text-indigo-500 uppercase tracking-wider flex items-center"><i class="fa-solid fa-expand mr-1.5"></i>サイズ・比率調整</h4>
+                    <div>
+                        <label class="block text-[11px] text-slate-600 mb-1 font-medium">タイトルの大きさ</label>
+                        <select id="input-title-size" onchange="renderPreview()" class="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs focus:outline-none focus:border-indigo-400">
+                            <option value="0.875rem">さらに小さめ (14px)</option>
+                            <option value="1.125rem">小さめ (18px)</option>
+                            <option value="1.5rem" selected>標準 (24px)</option>
+                            <option value="1.875rem">大きめ (30px)</option>
+                            <option value="2.25rem">特大 (36px)</option>
+                            <option value="contain" selected>全体表示 (見切れなし)</option>
+                            <option value="cover">枠いっぱい (トリミングあり)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-600 mb-1 font-medium">テキストと画像の比率 (全体)</label>
+                        <select id="input-box-ratio" onchange="renderPreview()" class="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs focus:outline-none focus:border-indigo-400">
+                            <option value="1:1" selected>均等 (テキスト1 : 画像1)</option>
+                            <option value="2:1">テキストを広く (テキスト2 : 画像1)</option>
+                            <option value="3:1">テキストをさらに広く (テキスト3 : 画像1)</option>
+                            <option value="1:2">画像を広く (テキスト1 : 画像2)</option>
+                            <option value="1:3">画像をさらに広く (テキスト1 : 画像3)</option>
+                            <option value="1:4">画像を最大に (テキスト1 : 画像4)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] text-slate-600 mb-1 font-medium">画像・テキストの配置方向 (全体)</label>
+                        <select id="input-layout-mode" onchange="renderPreview()" class="w-full bg-white border border-slate-200 rounded-xl p-2 text-xs focus:outline-none focus:border-indigo-400">
+                            <option value="text-top">テキストが上 / 画像が下 (標準)</option>
+                            <option value="img-top">画像が上 / テキストが下</option>
+                            <option value="text-left">テキストが左 / 画像が右 (横並び)</option>
+                            <option value="img-left">画像が左 / テキストが右 (横並び)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 border-t border-slate-100 pt-3">デザインテンプレート</label>
+                    <div class="grid grid-cols-1 gap-2">
+                        <button onclick="changeTemplate('standard')" id="tmpl-btn-standard" class="tmpl-btn border-2 border-indigo-600 bg-indigo-50 text-indigo-900 p-2.5 rounded-xl text-left text-xs font-bold transition-all">スタンダード</button>
+                        <button onclick="changeTemplate('elegant')" id="tmpl-btn-elegant" class="tmpl-btn border border-slate-200 text-slate-600 p-2.5 rounded-xl text-left text-xs font-medium transition-all">エレガント (明朝体)</button>
+                        <button onclick="changeTemplate('minimal')" id="tmpl-btn-minimal" class="tmpl-btn border border-slate-200 text-slate-600 p-2.5 rounded-xl text-left text-xs font-medium transition-all">ミニマル (枠なし)</button>
+                        <button onclick="changeTemplate('modern-jp')" id="tmpl-btn-modern-jp" class="tmpl-btn border border-slate-200 text-slate-600 p-2.5 rounded-xl text-left text-xs font-medium transition-all">和モダン (縦書き)</button>
+                    </div>
+                </div>
+
+                <div class="space-y-4 pt-4 border-t border-slate-100">
+                    <div>
+                        <div class="flex justify-between text-xs text-slate-600 mb-1"><span>本文の基本文字サイズ</span><span id="val-font-size">14px</span></div>
+                        <input type="range" id="input-font-size" min="10" max="24" value="14" oninput="updateLayoutStyles()" class="w-full">
+                    </div>
+                    <div>
+                        <div class="flex justify-between text-xs text-slate-600 mb-1"><span>ページ余白</span><span id="val-padding">15mm</span></div>
+                        <input type="range" id="input-padding" min="5" max="30" value="15" oninput="updateLayoutStyles()" class="w-full">
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <main id="preview-main-area" class="flex-1 bg-slate-200 overflow-y-auto p-4 md:p-8 flex flex-col items-center print-area">
+            <div id="preview-container" class="w-full space-y-6 print:space-y-0">
+                <div id="guide-card" class="no-print bg-white rounded-2xl p-8 text-center max-w-md mx-auto my-12 shadow-sm border border-slate-200">
+                    <i class="fa-solid fa-print text-4xl text-indigo-400 mb-4"></i>
+                    <h3 class="font-bold text-slate-800">SmartPrint</h3>
+                    <p class="text-sm text-slate-500 mt-2 mb-6">SmartDiaryから連携されたデータを読み込みます。</p>
+                    
+                    <button onclick="selectSyncFolder()" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-md shadow-indigo-200 transition-all">
+                        フォルダを選択して読み込む
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let dirHandle = null, exportedData = null;     
+        let currentTemplate = 'standard', currentOrientation = 'portrait'; 
+        const imageBlobUrls = {}; 
+        let footerCustomText = "ここをクリックして好きな文字を入力できます";
+        
+        let cellTextVisibility = {}; 
+        let cellFontSize = {};
+        let cellRatio = {};
+        let cellLayout = {}; 
+
+        window.addEventListener('DOMContentLoaded', async () => {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('sw.js').catch(err => {
+                    console.log('Service Worker 登録失敗: ', err);
+                });
+            }
+        });
+
+        function toggleMobileMenu() {
+            const sidebar = document.getElementById('sidebar-menu');
+            const backdrop = document.getElementById('mobile-menu-backdrop');
+            
+            sidebar.classList.toggle('-translate-x-full');
+            backdrop.classList.toggle('opacity-0');
+            backdrop.classList.toggle('pointer-events-none');
+        }
+
+        async function selectSyncFolder() {
+            try {
+                dirHandle = await window.showDirectoryPicker();
+                await loadDataFromDirHandle();
+            } catch (e) {
+                if (e.name !== 'AbortError') alert("フォルダの読み込みに失敗しました"); 
+            }
+        }
+
+        async function loadDataFromDirHandle() {
+            try {
+                const fileHandle = await dirHandle.getFileHandle('smartprint_export_data.json');
+                exportedData = JSON.parse(await (await fileHandle.getFile()).text());
+                
+                try { 
+                    const originalsHandle = await dirHandle.getDirectoryHandle('originals'); 
+                    await prefetchImagesFromList(originalsHandle);
+                } catch(e){}
+                
+                document.getElementById('btn-print').removeAttribute('disabled');
+                document.getElementById('btn-export-pdf').removeAttribute('disabled');
+                
+                document.getElementById('guide-card').style.display = 'none';
+                renderPreview();
+            } catch (e) {
+                console.error(e);
+                alert("SmartDiaryからのデータが見つかりません。エクスポートをやり直してください。");
+            }
+        }
+
+        async function prefetchImagesFromList(originalsHandle) {
+            for (const chapter of exportedData.chapters) {
+                if (chapter.images) {
+                    for (const imgName of chapter.images) {
+                        const cleanName = imgName.replace('originals/', '');
+                        if (!imageBlobUrls[imgName]) {
+                            try {
+                                const file = await (await originalsHandle.getFileHandle(cleanName)).getFile();
+                                imageBlobUrls[imgName] = URL.createObjectURL(file);
+                            } catch (e){}
+                        }
+                    }
+                }
+            }
+        }
+
+        function changeOrientation(orient) {
+            currentOrientation = orient;
+            document.querySelectorAll('.orient-btn').forEach(btn => btn.className = "orient-btn border border-slate-200 text-slate-600 py-2 rounded-xl text-xs font-medium transition-all");
+            document.getElementById(`orient-btn-${orient}`).className = "orient-btn border-2 border-indigo-600 bg-indigo-50 text-indigo-900 py-2 rounded-xl text-xs font-bold transition-all";
+            renderPreview();
+        }
+
+        function toggleCellText(cid) {
+            if (cellTextVisibility[cid] === undefined) {
+                cellTextVisibility[cid] = false; 
+            } else {
+                cellTextVisibility[cid] = !cellTextVisibility[cid]; 
+            }
+            renderPreview();
+        }
+
+        function changeCellFontSize(cid, delta) {
+            if (!cellFontSize[cid]) {
+                cellFontSize[cid] = parseInt(document.getElementById('input-font-size').value);
+            }
+            cellFontSize[cid] += delta;
+            if(cellFontSize[cid] < 8) cellFontSize[cid] = 8;
+            if(cellFontSize[cid] > 72) cellFontSize[cid] = 72;
+            updateLayoutStyles();
+        }
+
+        function cycleCellRatio(cid) {
+            const ratios = ["1:1", "2:1", "3:1", "1:2", "1:3", "1:4"];
+            let current = cellRatio[cid] || document.getElementById('input-box-ratio').value;
+            let idx = ratios.indexOf(current);
+            if (idx === -1) idx = 0;
+            cellRatio[cid] = ratios[(idx + 1) % ratios.length];
+            renderPreview();
+        }
+
+        function cycleCellLayout(cid) {
+            const layouts = ["text-top", "text-left", "img-top", "img-left"];
+            let current = cellLayout[cid] || document.getElementById('input-layout-mode').value;
+            let idx = layouts.indexOf(current);
+            if (idx === -1) idx = 0;
+            cellLayout[cid] = layouts[(idx + 1) % layouts.length];
+            renderPreview();
+        }
+
+        function renderPreview() {
+            const container = document.getElementById('preview-container');
+            container.innerHTML = '';
+            if (!exportedData || !exportedData.chapters) return;
+
+            const daysPerPage = parseInt(document.getElementById('input-days-per-page').value);
+            const showTitle = document.getElementById('switch-show-title').checked;
+            const showText = document.getElementById('switch-show-text').checked;
+            const globalLayoutMode = document.getElementById('input-layout-mode').value;
+            
+            const titleSize = document.getElementById('input-title-size').value;
+            const globalBoxRatio = document.getElementById('input-box-ratio').value;
+
+            const chunks = [];
+            for (let i = 0; i < exportedData.chapters.length; i += daysPerPage) {
+                chunks.push(exportedData.chapters.slice(i, i + daysPerPage));
+            }
+
+            chunks.forEach((chunk, pageIndex) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = "preview-wrapper no-print:mb-6 print:mb-0";
+                
+                const pageEl = document.createElement('div');
+                pageEl.className = `paper-preview ${currentOrientation} transition-all`;
+
+                let cols = 1, rows = 1;
+                if (daysPerPage === 2) {
+                    if (currentOrientation === 'portrait') { cols = 1; rows = 2; } else { cols = 2; rows = 1; }
+                } else if (daysPerPage === 3) {
+                    if (currentOrientation === 'portrait') { cols = 1; rows = 3; } else { cols = 3; rows = 1; }
+                } else if (daysPerPage === 4) {
+                    cols = 2; rows = 2; 
+                } else if (daysPerPage === 6) {
+    if (currentOrientation === 'portrait') { cols = 2; rows = 3; } else { cols = 3; rows = 2; }
+}
+
+
+                const gridStyle = `display: grid; grid-template-columns: repeat(${cols}, minmax(0, 1fr)); grid-template-rows: repeat(${rows}, minmax(0, 1fr)); gap: 1rem; width: 100%; height: 100%; min-height: 0;`;
+                let itemsHtml = `<div style="${gridStyle}">`;
+
+                chunk.forEach((chapter, index) => {
+                    const cleanHtml = DOMPurify.sanitize(marked.parse(chapter.blocks || ''));
+                    const hasImages = chapter.images && chapter.images.length > 0;
+                    
+                    const cid = chapter.id || `chap_${pageIndex}_${index}`;
+                    const isTextHiddenIndividually = cellTextVisibility[cid] === false;
+                    const shouldShowTextSpace = !isTextHiddenIndividually && (showTitle || showText);
+
+                    const currentRatio = cellRatio[cid] || globalBoxRatio;
+                    let textFlex = "1", imgFlex = "1";
+                    if (currentRatio === "2:1") { textFlex = "2"; imgFlex = "1"; }
+                    else if (currentRatio === "3:1") { textFlex = "3"; imgFlex = "1"; }
+                    else if (currentRatio === "1:2") { textFlex = "1"; imgFlex = "2"; }
+                    else if (currentRatio === "1:3") { textFlex = "1"; imgFlex = "3"; }
+                    else if (currentRatio === "1:4") { textFlex = "1"; imgFlex = "4"; }
+
+                    const currentLayoutMode = cellLayout[cid] || globalLayoutMode;
+                    let flexFlow = "flex-col";
+                    if (currentLayoutMode === 'img-top') flexFlow = "flex-col-reverse";
+                    else if (currentLayoutMode === 'text-left') flexFlow = "flex-row";
+                    else if (currentLayoutMode === 'img-left') flexFlow = "flex-row-reverse";
+
+                    const textAreaClass = `flex flex-col min-h-0 min-w-0 ${!shouldShowTextSpace ? 'hidden' : ''}`;
+                    const imgAreaClass = `flex items-center justify-center min-h-0 min-w-0 overflow-hidden ${!hasImages ? 'hidden' : ''}`;
+                    const finalImgFlex = (!shouldShowTextSpace && hasImages) ? "1" : imgFlex;
+
+                    let imagesHtml = '';
+                    if (hasImages) {
+                        const globalImageMode = document.getElementById('input-image-mode') ? document.getElementById('input-image-mode').value : 'contain';
+                        const objectFitClass = globalImageMode === 'cover' ? 'object-cover' : 'object-contain';
+
+                        imagesHtml = `<div class="${imgAreaClass}" style="flex: ${finalImgFlex};"><div class="flex flex-wrap gap-2 justify-center items-center h-full w-full">`;
+                        chapter.images.forEach(imgName => {
+                            if (imageBlobUrls[imgName]) {
+                                // objectFitClass を適用した書き方に変更
+                                imagesHtml += `<img src="${imageBlobUrls[imgName]}" class="print-target-image max-w-full max-h-full ${objectFitClass} rounded">`;
+                            }
+                        });
+                        imagesHtml += `</div></div>`;
+                    }
+
+                    let borderClass = currentTemplate === 'minimal' ? "p-1" : "border border-slate-200 rounded-lg p-3 bg-white";
+                    if (daysPerPage === 1 && currentTemplate !== 'minimal') borderClass = "p-4";
+
+                    const toggleBtn = (showTitle || showText) ? `
+                        <div class="no-print absolute top-2 right-2 z-10 flex gap-1 bg-slate-800/40 p-1 rounded-md shadow-sm backdrop-blur-sm transition-opacity opacity-40 hover:opacity-100">
+                            <button onclick="cycleCellLayout('${cid}')" class="w-6 h-6 flex items-center justify-center text-white hover:bg-slate-700 rounded text-xs" title="入力欄の位置(縦横)を変更">
+                                <i class="fa-solid fa-rotate-right"></i>
+                            </button>
+                            <div class="w-px bg-slate-500 mx-1"></div>
+                            <button onclick="cycleCellRatio('${cid}')" class="w-6 h-6 flex items-center justify-center text-white hover:bg-slate-700 rounded text-xs" title="入力欄と画像の比率を変更">
+                                <i class="fa-solid fa-arrows-left-right"></i>
+                            </button>
+                            <div class="w-px bg-slate-500 mx-1"></div>
+                            <button onclick="changeCellFontSize('${cid}', -2)" class="w-6 h-6 flex items-center justify-center text-white hover:bg-slate-700 rounded text-xs font-bold" title="文字を小さく">A-</button>
+                            <button onclick="changeCellFontSize('${cid}', 2)" class="w-6 h-6 flex items-center justify-center text-white hover:bg-slate-700 rounded text-xs font-bold" title="文字を大きく">A+</button>
+                            <div class="w-px bg-slate-500 mx-1"></div>
+                            <button onclick="toggleCellText('${cid}')" class="w-6 h-6 flex items-center justify-center text-white hover:bg-slate-700 rounded text-xs" title="${isTextHiddenIndividually ? 'テキストを表示' : 'テキストを隠す'}">
+                                <i class="fa-solid ${isTextHiddenIndividually ? 'fa-eye' : 'fa-eye-slash'}"></i>
+                            </button>
+                        </div>
+                    ` : '';
+
+                    itemsHtml += `
+                        <div class="grid-cell-box relative flex flex-col overflow-hidden w-full h-full min-h-0 ${borderClass}" data-cid="${cid}">
+                            ${toggleBtn}
+                            <div class="flex ${flexFlow} h-full w-full gap-3 overflow-hidden min-h-0">
+                                <div class="${textAreaClass}" style="flex: ${textFlex};">
+                                    ${showTitle ? `
+                                    <div class="header-line border-b border-slate-300 pb-1 mb-2 flex justify-between items-baseline shrink-0">
+                                        <h2 contenteditable="true" class="font-bold text-slate-900 focus:outline-none truncate" style="font-size: ${titleSize}; line-height: 1.3;">${chapter.title || '無題'}</h2>
+                                        <span contenteditable="true" class="text-xs text-slate-500 focus:outline-none whitespace-nowrap ml-2">${chapter.date ? chapter.date.replace(/-/g, '/') : ''}</span>
+                                    </div>` : ''}
+                                    ${showText ? `
+                                    <div contenteditable="true" class="article-body flex-1 overflow-hidden min-h-0 text-sm leading-relaxed focus:outline-none">
+                                        ${cleanHtml}
+                                    </div>` : ''}
+                                </div>
+                                ${imagesHtml}
+                            </div>
+                        </div>
+                    `;
+                });
+
+                itemsHtml += `</div>`;
+
+                pageEl.innerHTML = `
+                    <div class="flex flex-col h-full w-full flex-1 min-h-0 p-4" style="box-sizing: border-box;">
+                        ${itemsHtml}
+                        <div class="mt-2 text-center text-xs text-slate-400 shrink-0 flex justify-center border-t border-slate-200 pt-1">
+                            <span contenteditable="true" oninput="updateAllFooters(this)" class="focus:outline-none px-4 py-0.5 rounded border border-transparent hover:border-slate-300 text-[11px] tracking-wide max-w-full truncate min-w-[100px]">${footerCustomText}</span>
+                        </div>
+                    </div>
+                `;
+
+                wrapper.appendChild(pageEl);
+                container.appendChild(wrapper);
+            });
+
+            applyTemplateStyles();
+            updateLayoutStyles();
+            setTimeout(adjustResponsiveScale, 50);
+        }
+
+        function updateAllFooters(element) {
+            footerCustomText = element.innerText;
+            const footers = document.querySelectorAll('.paper-preview border-t + div > span, .paper-preview div.border-t > span[contenteditable="true"]');
+            footers.forEach(f => {
+                if (f !== element) f.innerText = footerCustomText;
+            });
+        }
+
+        function changeTemplate(type) {
+            currentTemplate = type;
+            document.querySelectorAll('.tmpl-btn').forEach(btn => btn.className = "tmpl-btn border border-slate-200 text-slate-600 p-2.5 rounded-xl text-left text-xs font-medium transition-all");
+            document.getElementById(`tmpl-btn-${type}`).className = "tmpl-btn border-2 border-indigo-600 bg-indigo-50 text-indigo-900 p-2.5 rounded-xl text-left text-xs font-bold transition-all";
+            renderPreview();
+        }
+
+        function applyTemplateStyles() {
+            const pages = document.querySelectorAll('.paper-preview');
+            pages.forEach(page => {
+                page.classList.remove('tmpl-mincho', 'tmpl-japanese-modern');
+                if (currentTemplate === 'elegant') page.classList.add('tmpl-mincho');
+                if (currentTemplate === 'modern-jp') page.classList.add('tmpl-japanese-modern');
+            });
+        }
+
+        function updateLayoutStyles() {
+            const fontSize = document.getElementById('input-font-size').value;
+            const padding = document.getElementById('input-padding').value;
+            document.getElementById('val-font-size').innerText = fontSize + 'px';
+            document.getElementById('val-padding').innerText = padding + 'mm';
+
+            document.querySelectorAll('.paper-preview > div').forEach(wrap => wrap.style.padding = `${padding}mm`);
+            
+            document.querySelectorAll('.grid-cell-box').forEach(cell => {
+                const cid = cell.dataset.cid;
+                const art = cell.querySelector('.article-body');
+                if (art) {
+                    const size = cellFontSize[cid] || fontSize;
+                    art.style.fontSize = `${size}px`;
+                }
+            });
+            
+            adjustResponsiveScale();
+        }
+
+        function adjustResponsiveScale() {
+            if (window.matchMedia('(max-print)').matches) return;
+            const mainArea = document.getElementById('preview-main-area');
+            if (!mainArea) return;
+
+            const availWidth = mainArea.clientWidth - 32; 
+            document.querySelectorAll('.preview-wrapper').forEach(wrapper => {
+                const page = wrapper.querySelector('.paper-preview');
+                if (!page) return;
+
+                const baseW = currentOrientation === 'landscape' ? 297 * 3.78 : 210 * 3.78;
+                const baseH = currentOrientation === 'landscape' ? 210 * 3.78 : 297 * 3.78;
+
+                if (availWidth < baseW) {
+                    const scale = availWidth / baseW;
+                    page.style.transform = `scale(${scale})`;
+                    wrapper.style.height = `${baseH * scale}px`;
+                } else {
+                    page.style.transform = 'none';
+                    wrapper.style.height = 'auto';
+                }
+            });
+        }
+
+        window.addEventListener('resize', adjustResponsiveScale);
+
+        async function exportDirectPDF() {
+            const btn = document.getElementById('btn-export-pdf');
+            const originalText = btn.innerHTML;
+            
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin sm:mr-2"></i><span class="hidden sm:inline">生成中...</span>';
+            btn.disabled = true;
+
+            // スクロール位置によるキャプチャのズレを防ぐため一番上に戻す
+            window.scrollTo(0, 0);
+
+            const container = document.getElementById('preview-container');
+            const originalClasses = container.className;
+            
+            // 重要: html2pdfは画面上のCSS（余白等）をそのままPDFに反映させてしまうため、
+            // ページ間にあるTailwindの余白クラス(space-y-6など)をPDF生成の瞬間だけ完全に消去する
+            container.className = "w-full"; 
+
+            const wrappers = document.querySelectorAll('.preview-wrapper');
+            const pages = document.querySelectorAll('.paper-preview');
+            
+            // 【追加】PDFに写り込んではいけない要素（設定アイコンなど）を取得して非表示にする
+            const noPrintElements = container.querySelectorAll('.no-print');
+            noPrintElements.forEach(el => el.style.display = 'none');
+            
+            wrappers.forEach((w, index) => {
+                w.style.height = 'auto';
+                w.style.margin = '0px'; 
+                w.style.padding = '0px';
+                
+                // 最後のページ以外で確実に改ページさせる
+                if (index < wrappers.length - 1) {
+                    w.style.pageBreakAfter = 'always';
+                    w.style.breakAfter = 'page';
+                } else {
+                    w.style.pageBreakAfter = 'auto';
+                    w.style.breakAfter = 'auto';
+                }
+                w.style.pageBreakInside = 'avoid';
+            });
+            
+            pages.forEach(p => {
+                p.style.transform = 'none';
+                p.style.boxShadow = 'none';
+                // ピクセル丸め誤差での白紙生成を防ぐための安全マージン
+                p.style.height = currentOrientation === 'portrait' ? '296.5mm' : '209.5mm';
+                p.style.width = currentOrientation === 'portrait' ? '210mm' : '297mm';
+                p.style.overflow = 'hidden';
+            });
+
+            const opt = {
+                margin:       0,
+                filename:     `SmartDiary_${exportedData.chapters[0].date}.pdf`,
+                image:        { type: 'jpeg', quality: 0.98 },
+                html2canvas:  { 
+                    scale: 2, 
+                    useCORS: true,
+                    scrollY: 0 // スクロールのズレを完全に無効化
+                },
+                jsPDF:        { unit: 'mm', format: 'a4', orientation: currentOrientation },
+                pagebreak:    { mode: ['css', 'legacy'] }
+            };
+
+            try {
+                await html2pdf().set(opt).from(container).save();
+            } catch (error) {
+                console.error("PDF生成エラー:", error);
+                alert("PDFの生成に失敗しました。");
+            } finally {
+                // スタイルを元の画面表示用に戻す
+                container.className = originalClasses;
+                
+                // 【追加】非表示にしたアイコンを元に戻す
+                noPrintElements.forEach(el => el.style.display = '');
+
+                wrappers.forEach(w => {
+                    w.style.margin = '';
+                    w.style.padding = '';
+                    w.style.pageBreakAfter = '';
+                    w.style.breakAfter = '';
+                    w.style.pageBreakInside = '';
+                });
+                pages.forEach(p => {
+                    p.style.height = '';
+                    p.style.width = '';
+                    p.style.overflow = '';
+                    p.style.boxShadow = '';
+                });
+                adjustResponsiveScale();
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
